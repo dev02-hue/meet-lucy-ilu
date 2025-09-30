@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { FaCalendarAlt, FaArrowLeft, FaArrowRight, FaLock, FaGift, FaBitcoin } from "react-icons/fa";
-
+import Link from "next/link";
+import { MeetingApplicationData, saveMeetingApplication } from "@/lib/meetingApplication";
+ 
 const MEETING_PLAN = {
   basic: {
     price: 500,
@@ -49,8 +51,14 @@ const STEPS = {
   CONFIRMATION: 4
 };
 
+// Storage key for persistence
+const STORAGE_KEY = "meeting_application_data";
+
 export default function MeetingApplication() {
   const [currentStep, setCurrentStep] = useState(STEPS.PERSONAL_INFO);
+  const [isLoading, setIsLoading] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [applicationId, setApplicationId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     // Personal Info
     fullName: "",
@@ -69,6 +77,30 @@ export default function MeetingApplication() {
     paymentMethod: ""
   });
 
+  // Load data from localStorage on component mount
+  useEffect(() => {
+    const savedData = localStorage.getItem(STORAGE_KEY);
+    if (savedData) {
+      try {
+        const parsedData = JSON.parse(savedData);
+        setFormData(parsedData.formData || formData);
+        setCurrentStep(parsedData.currentStep || STEPS.PERSONAL_INFO);
+      } catch (error) {
+        console.error("Error loading saved data:", error);
+      }
+    }
+  }, []);
+
+  // Save data to localStorage whenever formData or currentStep changes
+  useEffect(() => {
+    const dataToSave = {
+      formData,
+      currentStep,
+      timestamp: new Date().toISOString()
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
+  }, [formData, currentStep]);
+
   const updateFormData = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
@@ -81,12 +113,72 @@ export default function MeetingApplication() {
     setCurrentStep(prev => Math.max(prev - 1, STEPS.PERSONAL_INFO));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
     if (currentStep === STEPS.PAYMENT) {
-      // Handle payment processing
-      nextStep();
+      setIsLoading(true);
+      setSubmitError(null);
+
+      try {
+        // Prepare application data for server action
+        const applicationData: MeetingApplicationData = {
+          fullName: formData.fullName,
+          email: formData.email,
+          phone: formData.phone,
+          motivation: formData.motivation,
+          location: formData.location,
+          preferredDate: formData.preferredDate,
+          selectedPlan: formData.selectedPlan,
+          planPrice: MEETING_PLAN[formData.selectedPlan as keyof typeof MEETING_PLAN].price,
+          paymentMethod: formData.paymentMethod
+        };
+
+        // Call server action to save application
+        const result = await saveMeetingApplication(applicationData);
+
+        if (result.success && result.applicationId) {
+          setApplicationId(result.applicationId);
+          nextStep();
+          // Clear storage after successful submission
+          localStorage.removeItem(STORAGE_KEY);
+        } else {
+          setSubmitError(result.error || "Failed to submit application. Please try again.");
+        }
+      } catch (err) {
+        console.error("Error submitting application:", err);
+        setSubmitError("An unexpected error occurred. Please try again.");
+      } finally {
+        setIsLoading(false);
+      }
     }
+  };
+
+  const handlePaymentNavigation = () => {
+    // Save current state before navigating to payment
+    const dataToSave = {
+      formData,
+      currentStep: STEPS.PAYMENT, // Return to payment step
+      timestamp: new Date().toISOString()
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
+  };
+
+  const clearSavedData = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    setCurrentStep(STEPS.PERSONAL_INFO);
+    setFormData({
+      fullName: "",
+      email: "",
+      phone: "",
+      motivation: "",
+      location: "",
+      preferredDate: "",
+      selectedPlan: "premium",
+      paymentMethod: ""
+    });
+    setSubmitError(null);
+    setApplicationId(null);
   };
 
   const selectedPlan = MEETING_PLAN[formData.selectedPlan as keyof typeof MEETING_PLAN];
@@ -106,6 +198,13 @@ export default function MeetingApplication() {
           <p className="text-xl text-gray-300">
             Complete your application and secure your spot for an unforgettable experience
           </p>
+          {/* Clear saved data button */}
+          <button
+            onClick={clearSavedData}
+            className="mt-4 text-sm text-gray-400 hover:text-white transition-colors"
+          >
+            Clear Saved Progress
+          </button>
         </motion.div>
 
         {/* Progress Bar */}
@@ -370,6 +469,17 @@ export default function MeetingApplication() {
                 >
                   <h2 className="text-2xl font-bold text-white mb-6">Payment Method</h2>
                   
+                  {/* Error Display */}
+                  {submitError && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="bg-red-500/20 border border-red-500 text-red-300 p-4 rounded-xl"
+                    >
+                      {submitError}
+                    </motion.div>
+                  )}
+                  
                   <div className="bg-[#6C63FF]/10 border border-[#6C63FF] rounded-xl p-6 mb-8">
                     <h4 className="text-lg font-semibold text-white mb-2">Order Summary</h4>
                     <div className="flex justify-between items-center">
@@ -440,19 +550,33 @@ export default function MeetingApplication() {
                       {formData.paymentMethod === "crypto" ? (
                         <div className="space-y-4">
                           <p className="text-gray-300">
-                            You&apos;ll be redirected to our secure cryptocurrency payment gateway after submitting your application.
+                            You&apos;ll be redirected to our secure cryptocurrency payment gateway to complete your payment.
                           </p>
                           <div className="bg-black/50 rounded-lg p-4">
                             <code className="text-sm text-gray-300">
                               Supported: BTC, ETH, USDT, USDC
                             </code>
                           </div>
+                          <Link
+                            href="/payment/crypto"
+                            onClick={handlePaymentNavigation}
+                            className="inline-block bg-[#6C63FF] text-white px-6 py-3 rounded-lg font-semibold hover:bg-[#5a52d5] transition-colors"
+                          >
+                            Proceed to Crypto Payment
+                          </Link>
                         </div>
                       ) : (
                         <div className="space-y-4">
                           <p className="text-gray-300">
-                            Enter your gift card code in the next step. You&apos;ll receive confirmation within 24 hours.
+                            You&apos;ll be redirected to our gift card redemption page to enter your code.
                           </p>
+                          <Link
+                            href="/payment/giftcard"
+                            onClick={handlePaymentNavigation}
+                            className="inline-block bg-[#FF6584] text-white px-6 py-3 rounded-lg font-semibold hover:bg-[#ff4b6f] transition-colors"
+                          >
+                            Redeem Gift Card
+                          </Link>
                         </div>
                       )}
                     </motion.div>
@@ -466,13 +590,25 @@ export default function MeetingApplication() {
                     >
                       <FaArrowLeft /> Back
                     </button>
-                    <button
-                      type="submit"
-                      disabled={!formData.paymentMethod}
-                      className="bg-[#FF6584] text-white px-8 py-3 rounded-xl font-semibold hover:bg-[#ff4b6f] transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <FaLock /> Secure Payment
-                    </button>
+                    
+                    {formData.paymentMethod && (
+                      <button
+                        type="submit"
+                        disabled={isLoading}
+                        className="bg-[#6C63FF] text-white px-8 py-3 rounded-xl font-semibold hover:bg-[#5a52d5] transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isLoading ? (
+                          <>
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            Submitting...
+                          </>
+                        ) : (
+                          <>
+                            Submit Application <FaArrowRight />
+                          </>
+                        )}
+                      </button>
+                    )}
                   </div>
                 </motion.div>
               )}
@@ -496,6 +632,14 @@ export default function MeetingApplication() {
                     Thank you for your interest in meeting Lucy Ilu!
                   </p>
                   
+                  {applicationId && (
+                    <div className="bg-white/5 rounded-2xl p-6 max-w-md mx-auto mb-6">
+                      <h3 className="text-lg font-semibold text-white mb-2">Application Reference</h3>
+                      <p className="text-gray-300 font-mono text-sm">{applicationId}</p>
+                      <p className="text-gray-400 text-sm mt-2">Please keep this reference for your records</p>
+                    </div>
+                  )}
+                  
                   <div className="bg-white/5 rounded-2xl p-6 max-w-md mx-auto mb-8">
                     <h3 className="text-lg font-semibold text-white mb-4">Next Steps:</h3>
                     <ul className="text-gray-300 space-y-2 text-left">
@@ -508,17 +652,17 @@ export default function MeetingApplication() {
                   
                   <div className="flex flex-col sm:flex-row gap-4 justify-center">
                     <button
-                      onClick={() => setCurrentStep(STEPS.PERSONAL_INFO)}
+                      onClick={clearSavedData}
                       className="bg-[#6C63FF] text-white px-6 py-3 rounded-xl font-semibold hover:bg-[#5a52d5] transition-colors"
                     >
                       Submit Another Application
                     </button>
-                    <button
-                      onClick={() => window.location.href = '/'}
-                      className="bg-white/10 text-white px-6 py-3 rounded-xl font-semibold hover:bg-white/20 transition-colors"
+                    <Link
+                      href="/"
+                      className="bg-white/10 text-white px-6 py-3 rounded-xl font-semibold hover:bg-white/20 transition-colors text-center"
                     >
                       Return Home
-                    </button>
+                    </Link>
                   </div>
                 </motion.div>
               )}
